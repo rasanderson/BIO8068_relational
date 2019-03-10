@@ -1,0 +1,297 @@
+---
+title: "BIO8068 Data visualisation and management"
+author: "Roy Sanderson"
+subtitle: Relational data
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1. Introduction
+You will often have to deal with data that comes from multiple sources but that is linked in some way. For example, tables of species, plots, environmental data, survey sites, where there are links between certain common fields within each table. Another common example is that of GPS data, where you might have tables of animal positions, gps tags, time-stamps, animal characteristics (gender, age) etc. and you need to be able to organise them. The classic method if organising such data is in the form of a _relational database_ in which the features of each table are strictly-enforced, so that no invalid data can accidentally be entered, and the tables all remain properly synchronised with each other. Commercial packages include Microsoft Access (either installed locally or on a server), and Oracle. Open source methods include MySQL and PostgreSQL, the latter being particularly useful for ecologists as it has an add-on PostGIS which integrates with QGIS to make the database spatially-aware. This can be useful for GPS data. All four types of relational database can be operated via a graphical user interface, to show the tables and their relationships, or more usually via Structured Query Languange (SQL). SQL has its own unique syntax, and there is not time to cover its use in-depth in this module. Fortunately, main of the relationships between tables can be undertaken directly within R, although as "referential integrity" is not enforced you need to be careful not to make incorrect queries of the data. The main aims of this practical are to:
+
+* Introduce you to different types of relationships between tables in R, using a widely used non-ecological dataset (airline flights dataset)
+* Demonstrate how to connect to a PostgreSQL server from within R using basic SQL commands, and retrieve data (GPS tracking of deer)
+* Use dplyr functions to access and manipulate data from the GPS deer PostgreSQL server without the need for SQL syntax
+
+## 2. Relationships between tables
+You are already familiar with the concept of 'tidy' data, typically from a single table. With relational database you have multiple tables, and the relations are always defined in terms of the relationships between any two tables. Three or more tables are always a property of each pair of tables within the sets of tables as a whole.
+
+To help you understand the concepts we are going to use dplyr, and data from the `nycflights13` package. This is airline flight delays: obviously a non-ecological example, but you will see it in many textbooks, and it illustrates the key points. We will cover three broad types of 'verbs' to work with relational data:
+
+* **Mutating joins** add new variables to one data frame by matching observations in the other
+* **Filtering joins** filter out observations from one data frame depending on whether they match an observation in the other data frame
+* **Set operations** use set commands _and_, _both_, _not_ etc. when comparing observations in tables
+
+## 3. The nycflights13 package
+Install the package in the usual way; it contains data on over 300,000 flights that departed New York County airports (including JFK airport) in 2013, so it is a big dataset. The data are in the form of tibbles, so are easy to examine:
+
+```{r load dplyr and ncyflights, echo=FALSE, warning=FALSE, message=FALSE}
+library(dplyr)
+library(nycflights13)
+```
+
+```{r nycflights13 intro, eval=FALSE}
+library(dplyr)
+library(nycflights13)
+flights
+airlines
+airports
+planes
+weather
+```
+
+Hopefully you can see that there are common columns in all 5 tables. How do they link together?
+
+![](figs/relational-nycflights.png)
+
+This is quite complex, but shows that
+* `flights` connects to `planes` via `tailnum`
+* `flights` connects to `airlines` via `carrier`
+* `flights` connects to `airports` via both `origin` and `dest` (destination)
+* `flights` connects to `weather` via `origin` as well as date/time variables
+
+**Question**: if you wanted to work out the route each plane takes from its origin to its destination, what tables and variables would be needed?
+
+## 4. Relationship keys
+A _key_ concept to understand with relational data is that of the **key** . It is a variable that uniquely identifies and observation in a dataset. So each aeroplane is uniquely identified by `tailnum`. Sometimes multiple variables will be needed, **Question**: how many (and which) variables are needed to identify a unique observation in the `weather` data frame?
+
+There are two types of key:
+* **Primary key** uniquely identifies each observation (row) in its own table. Here `planes$tailnum` uniquely identifies each aeroplane in the planes data frame.
+* **Foreign key** uniquely identifies an observation in another table. So `flights$tailnam` is foreign as it matches each flight to a unique plane, although that plane may fly multiple times.
+
+To check that you've correctly identified your primary key, make sure that there is only one observation for each primary key:
+
+```{r primary key check}
+# Check number of observations
+planes %>% 
+  count(tailnum)
+
+# Obviously too many to check manually, so make sure none greater than 1
+planes %>%
+  count(tailnum) %>% 
+  filter(n > 1)
+```
+
+Try and repeat the exercise for the `airlines` table. Some tables in this package do not have an explict unique primary key, for example the `flights` table, even with `year`, `month`, `day`, `flight`:
+
+```{r no primary in flights}
+flights %>% 
+  count(year, month, day, flight) %>% 
+  filter(n > 1)
+```
+
+Sometimes such issues can be resolved by artificially creating a unique id for each row, or "surrogate" key, by using `mutate()` with `row_number()`. Have a go at creating a column for the `flights` table called `surrogate_key` that simply contains the row numbers.
+
+## 5. Mutating joins
+This type of join combines variables from two tables, adding variables to the right. If you already have a lot of variables in a table, it might be easiest to use the `View()` function to display what's going on in RStudio. To make it easier to see what's happening, we'll create a `flights2` table with just a few variables, then add the full airline carrier name rather than just the code, via a mutating join:
+
+```{r mutating join on flights2, echo=FALSE}
+# Select a subset of data from flights for clarity
+flights2 <- flights %>% 
+  select(year:day, hour, origin, dest, tailnum, carrier)
+flights2
+
+# Now carry out the mutating join, omitting origin and destination
+flights2 %>%
+  select(-origin, -dest) %>% 
+  left_join(airlines, by = "carrier")
+```
+
+You may have notice the function `left_join` above. These very simple datasets show the concepts clearly. Imagine two small data frames, each with two columns, the first a key:
+
+![](figs/x_and_y.png)
+
+You can easily create these two data frames in R:
+
+```{r x and y data frames}
+x <- tribble(
+  ~key, ~val_x,
+     1, "x1",
+     2, "x2",
+     3, "x3"
+)
+y <- tribble(
+  ~key, ~val_y,
+     1, "y1",
+     2, "y2",
+     4, "y3"
+)
+```
+
+The colours in the 'key' column show where the variables match up (1 and 2) and where they don't match (3 and 4). We can show the matches with dots linking the related keys, and output table.
+
+### 5.1 Inner join
+This is a simple join; you'll recall only keys 1 and 2 matched up in our example:
+
+![](figs/join-inner.png)
+
+Only the matched rows are returned, no unmatched rows come back. In dplyr this is:
+
+```{r inner join}
+x %>% 
+  inner_join(y, by = "key")
+```
+
+### 5.2 Outer joins
+Outer joins keep all the observations from at least one of the tables, with the result that NA's appear in the outpus. The `left_join` used above is most common:
+
+![](figs/join-outer.png)
+
+Another way of viewing the same types of join is through a Venn diagram:
+
+![](figs/join-venn.png)
+
+**Question**: Try doing a full join on the example x and y data frames.
+
+**Note**: The joining variable above is specified with the word `by`. If this is omitted `by = NULL` and the join will be made on all variables with the same name. It is possible to make joins on multiple variables.
+
+### 5.3 Filtering joins
+These match observations in a similar way to mutating joins, and are of two types:
+
+* `semi_join(x, y)` keeps all observations in `x` that have a match in `y`
+* `anti_join(x, y)` omits all observations in `x` that have a match in `y`
+
+Semi-joins are handy when producing summaries of data from two tables. For example, if you want to know the dates and times just for the 10 most popular flight destinations, first create a table `top_dest`, then do a semi-join on the flights table to extract all their dates\times:
+
+```{r semi-join example, echo=FALSE}
+# Calculate top 10 flight destinations
+top_dest <- flights %>%
+  count(dest, sort = TRUE) %>%
+  head(10)
+top_dest
+
+# Now semi_join to find date/time for every journey to these top 10
+# destinations
+flights %>% 
+  semi_join(top_dest)
+```
+
+Graphically, you can view it as:
+
+![](figs/join-semi.png)
+
+Anti-joins are less widely used, but can be useful to identify errors in the data.
+
+## 6. Structured Query Language (SQL)
+Many of the commands we have covered already have direct equivalents in SQL. For example, for the mutating joins:
+
+| dplyr |	SQL|
+|:-----:|:---:|
+| inner_join(x, y, by = "z") |	SELECT * FROM x INNER JOIN y USING (z) |
+| left_join(x, y, by = "z")  |	SELECT * FROM x LEFT OUTER JOIN y USING  (z) |
+| right_join(x, y, by = "z") |	SELECT * FROM x RIGHT OUTER JOIN y USING (z) |
+| full_join(x, y, by = "z")  |	SELECT * FROM x FULL OUTER JOIN y USING (z) |
+
+Obviously, handling SQL is more complicated that standard `dplyr` calls, but sometimes you may have no choice but to use them. I have setup a small PostgreSQL database `gps_tracking_db` on our Linux server `mach-252.ncl.ac.uk` which you can access with the username `basic_user` and password `basic_user`. Admittedly, this is not a very secure username or password, but I'm trusting you not to hack, and you should have read-only access. The structure of the full database is actually very complicated, as it has to account for the risk that GPS tags might become detached from a deer, the same animal might therefore be tracked by different GPS receivers at different times etc. The example is taken from Chapters 2 and 3 of _Spatial Database for GPS Wildlife Tracking data: a practical guide to creating a data management system with PostgreSQl/PostGIS and R_ by Urbano and Cagnacci (2014). For simplicity, we will just focus on the tables `main.animals` with the names etc. of individual deer, their `lu_tables.lu_species` table, and `lu_tables.lu_age_class` plus the tables of `main.gps_data` and `main.gps_sensors`.
+
+## 6.1 SQL from within RStudio
+First, install and load the `DBI` and `RPostgreSQL' packages. You then need to open a connection to the server, with your username and password:
+
+```{r connect to localhost, echo=FALSE}
+library(DBI)
+library(RPostgreSQL)
+con <- dbConnect(drv = dbDriver("PostgreSQL"),
+                 dbname = 'gps_tracking_db', 
+                 host = 'localhost', # Name of PostgreSQL server
+                 port = 5432,        # default for PostgreSQL DBA
+                 user = 'basic_user',
+                 password = 'basic_user')
+```
+```{r connect to mach-252, eval=FALSE}
+con <- dbConnect(drv = dbDriver("PostgreSQL"),
+                 dbname = 'gps_tracking_db', 
+                 host = 'mach-252.ncl.ac.uk', # Name of PostgreSQL server
+                 port = 5432,                 # default for PostgreSQL DBA
+                 user = 'basic_user',
+                 password = 'basic_user')
+```
+
+Now that you have created your connection `con`, first list the tables available:
+
+```{r list SQL tables}
+dbListTables(con)
+```
+
+you can issue an SQL `SELECT` command, and then `fetch` the results. SQL commands are always in upper-case, and are typically of the form 
+
+`SELECT <some column(s)>`
+`FROM <database(s)>`
+`WHERE <various constraints>;`
+
+**Note** There is a `;` at the end of the SQL command. First, let's select everything from the `main.animals` table and look at it; the `SELECT *` option means "all columns in the table"
+
+```{r SELECT animals}
+res <- dbSendQuery(con, "SELECT * FROM main.animals;")
+animals <- fetch(res)
+animals
+```
+
+Download the data from the `lu_tables.lu_age_class` and `lu_tables.lu_species` in a similar way. Notice how the animals have codes for their species and ages, and it would be better to link them with the actual text. We can do this in SQL, which is analagous to an inner join but on multiple tables. This is hard to do in R which only handles pairs of tables.
+
+```{r SELECT spp and ages}
+# More comprehensive query linking tables
+res <- dbSendQuery(con,
+                   "SELECT
+                       animals.name,
+                       animals.sex,
+                       lu_age_class.age_class_description,
+                       lu_species.species_description
+                   FROM
+                       lu_tables.lu_age_class,
+                       lu_tables.lu_species,
+                       main.animals
+                   WHERE
+                       lu_age_class.age_class_code = animals.age_class_code
+                       AND
+                       lu_species.species_code = animals.species_code;")
+animal_names_spp_ages <- fetch(res)
+animal_names_spp_ages
+```
+
+This is easier to read. We can take the SQL commands a step further, and rename some of the columns using the `AS` function as we read them from the database:
+
+```{r SELECT and rename columns}
+res <- dbSendQuery(con,
+                   "SELECT
+                       animals.animals_id AS id,
+                       animals.animals_code AS code,
+                       animals.name,
+                       animals.sex,
+                       lu_age_class.age_class_description AS age_class,
+                       lu_species.species_description AS species
+                   FROM
+                       lu_tables.lu_age_class,
+                       lu_tables.lu_species,
+                       main.animals
+                   WHERE
+                       lu_age_class.age_class_code = animals.age_class_code
+                       AND
+                       lu_species.species_code = animals.species_code;")
+animal_names_spp_ages <- fetch(res)
+animal_names_spp_ages
+```
+
+Sketch out the relationships between the three tables animals, lu_age_class and lu_species. What are the primary keys? Finally, once you have finished working with the database, remember to close the connection:
+
+```{r close PostgreSQL connection}
+# Clear the last result
+dbClearResult(res)
+# Disconnect from the database
+dbDisconnect(con)
+```
+
+## 6.2 Accessing PostgreSQL from `dplyr`
+If you are going to do a lot of database work, it is worth learning how to use SQL. The `dbplyr` package is supposed to allow direct access to SQL databases, although I will admit having trouble configuring it. Sometimes you may find it simpler to use a general `SELECT` to gather all the data from a table, then manipulate it within R. The following commands (theoretically!) allow you to use `dbplyr` but they do not work with our PostgreSQL database:
+
+```{r using dbplyr, eval=FALSE}
+library(dbplyr)
+species_tbl <- tbl(con, "lu_tables.lu_species")
+species_tbl
+```
+
+A word of caution. One weakness of R is that it has poor memory management, and SQL is generally better for huge databases. If you want to stick with R, and simply pull tables back from SQL using `SELECT`, you may want to learn about the `data.table` package. This is similar to some respects to the `tidyverse` packages, although not as well integrated. Its main advantage is that it copes with very large databases and tables rapidly.
